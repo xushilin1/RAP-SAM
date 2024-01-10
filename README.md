@@ -92,7 +92,7 @@ We provide the checkpoint here. You can download them and then run the command b
 
 ## Citation
 ```
-@article{yuan2024ovsam,
+@article{xu2024rapsam,
     title={RAP-SAM:Towards Real-Time All-Purpose Segment Anything},
     author={Shilin Xu and Haobo Yuan and Qingyu Shi and Lu Qi and Jingbo Wang and Yibo Yang and Yining Li and Kai Chen and Yunhai Tong and Bernard Ghanem and Xiangtai Li and Ming-Hsuan Yang},
     journal={arXiv preprint},

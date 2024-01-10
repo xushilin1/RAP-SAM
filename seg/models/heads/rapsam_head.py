@@ -236,3 +236,9 @@ class RapSAMVideoHead(Mask2FormerVideoHead):
                 all_cls_scores.append(all_cls_scores[-1])
                 all_iou_preds.append(iou_preds)
         return all_cls_scores, all_masks_preds, all_iou_preds, object_kernels
+
+    def get_targets(self, *args, **kwargs):
+        raise NotImplementedError
+
+    def loss_by_feat(self, *args, **kwargs):
+        raise NotImplementedError
