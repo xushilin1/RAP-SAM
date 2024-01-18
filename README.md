@@ -25,8 +25,10 @@
     <a href="https://lxtgh.github.io/"><strong>Xiangtai Li</strong></a>
     ·
     <a href="https://scholar.google.com/citations?user=p9-ohHsAAAAJ&hl=zh-CN"><strong>Ming-Hsuan Yang</strong></a>
+  <br >
+     PKU, NTU, UC-Merced, Shanghai AI, KAUST, Google Research
   </p>
-   
+
 <br/>
 
 ## Introduction
