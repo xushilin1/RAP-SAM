@@ -26,6 +26,7 @@
     ·
     <a href="https://scholar.google.com/citations?user=p9-ohHsAAAAJ&hl=zh-CN"><strong>Ming-Hsuan Yang</strong></a>
   </p>
+   
 <br/>
 
 ## Introduction
@@ -34,6 +35,8 @@
 
 We present real-time all-purpose segmentation to segment and recognize objects for image, video, and interactive inputs. In addition to benchmarking, we also propose a simple yet
 effective baseline, named RAP-SAM, which achieves the best accuracy and speed trade-off among three different tasks.
+
+![Figure](./assets/comparison.jpg)
 
 ## Method
 ![Figure](./assets/method.png)
@@ -75,9 +78,25 @@ We provide the checkpoint here. You can download them and then run the command b
 
 [rapsam_r50_12e.pth](https://1drv.ms/u/c/12a1b84edebf20f7/EZH7IDUQTzlGlelI9whr39EB3Oet_Lux1tpowOYh68dWUg?e=GDF8Xg)
 
+#### Test on COCO Panoptic 
+
 ```base 
 ./tools/dist_test.sh configs/rap_sam/eval_rap_sam_coco.py $CKPT $NUM_GPUS
 ```
+#### Test on Video Instance Segmentation
+
+
+
+#### Test on Interactive Segmentation (COCO-SAM)
+
+
+
+## Training 
+
+The code will be release soon!!! Please stay tuned.
+
+
+
 ## Visualization
 ### Interactive Segmentation
 ![Figure](./assets/interactive_seg.png)
