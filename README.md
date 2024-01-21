@@ -53,7 +53,10 @@ Install the packages:
 pip install mmengine==0.8.4
 pip install mmdet=3.0.0
 ```
-
+Generate classifier using the following command.
+```
+PYTHONPATH='.' python tools/gen_cls.py $CONFIG
+```
 ## Data Preparation
 The main experiments are conducted on [COCO](https://cocodataset.org/#home) 
 and [YouTube-VIS-2019](https://youtube-vos.org/dataset/vis/) datasets. 
