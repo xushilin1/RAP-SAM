@@ -91,8 +91,7 @@ class VideoPromptDataPreprocessor(VideoSegDataPreprocessor):
         """
         inputs, data_samples = data['inputs'], data['data_samples']
         from mmengine.utils import is_seq_of
-        import math
-        if data_samples[0].data_tag == 'sam':
+        if data_samples[0].get('data_tag', 'coco') == 'sam':
             batch_pad_shape = self._get_pad_shape(data)
             data = self.cast_data(data)  # type: ignore
             _batch_inputs = data['inputs']

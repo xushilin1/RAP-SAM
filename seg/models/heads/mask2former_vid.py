@@ -208,7 +208,6 @@ class Mask2FormerVideoHead(AnchorFreeHead):
                 nn.Linear(feat_channels, cls_embed_dim)
             )
 
-            # Haobo Yuan:
             # For the logit_scale, I refer to this issue.
             # https://github.com/openai/CLIP/issues/46#issuecomment-945062212
             # https://github.com/openai/CLIP/issues/46#issuecomment-782558799
@@ -255,6 +254,438 @@ class Mask2FormerVideoHead(AnchorFreeHead):
         for p in self.transformer_decoder.parameters():
             if p.dim() > 1:
                 nn.init.xavier_normal_(p)
+
+    def preprocess_gt(
+            self, batch_gt_instances: InstanceList,
+            batch_gt_semantic_segs: List[Optional[PixelData]]) -> InstanceList:
+        """Preprocess the ground truth for all images.
+
+        Args:
+            batch_gt_instances (list[:obj:`InstanceData`]): Batch of
+                gt_instance. It usually includes ``labels``, each is
+                ground truth labels of each bbox, with shape (num_gts, )
+                and ``masks``, each is ground truth masks of each instances
+                of a image, shape (num_gts, h, w).
+            batch_gt_semantic_segs (list[Optional[PixelData]]): Ground truth of
+                semantic segmentation, each with the shape (1, h, w).
+                [0, num_thing_class - 1] means things,
+                [num_thing_class, num_class-1] means stuff,
+                255 means VOID. It's None when training instance segmentation.
+
+        Returns:
+            list[obj:`InstanceData`]: each contains the following keys
+
+                - labels (Tensor): Ground truth class indices\
+                    for a image, with shape (n, ), n is the sum of\
+                    number of stuff type and number of instance in a image.
+                - masks (Tensor): Ground truth mask for a\
+                    image, with shape (n, h, w).
+        """
+        num_things_list = [self.num_things_classes] * len(batch_gt_instances)
+        num_stuff_list = [self.num_stuff_classes] * len(batch_gt_instances)
+        if isinstance(batch_gt_instances[0], List):
+            gt_labels_list = [
+                [torch.stack([torch.ones_like(gt_instances['labels']) * frame_id, gt_instances['labels']], dim=1)
+                 for frame_id, gt_instances in enumerate(gt_vid_instances)]
+                for gt_vid_instances in batch_gt_instances
+            ]
+            gt_labels_list = [torch.cat(gt_labels, dim=0) for gt_labels in gt_labels_list]
+            gt_masks_list = [
+                [gt_instances['masks'] for gt_instances in gt_vid_instances]
+                for gt_vid_instances in batch_gt_instances
+            ]
+            gt_semantic_segs = [
+                [None if gt_semantic_seg is None else gt_semantic_seg.sem_seg
+                 for gt_semantic_seg in gt_vid_semantic_segs]
+                for gt_vid_semantic_segs in batch_gt_semantic_segs
+            ]
+            if gt_semantic_segs[0][0] is None:
+                gt_semantic_segs = [None] * len(batch_gt_instances)
+            else:
+                gt_semantic_segs = [torch.stack(gt_sem_seg, dim=0) for gt_sem_seg in gt_semantic_segs]
+            gt_instance_ids_list = [
+                [torch.stack([torch.ones_like(gt_instances['instances_ids']) * frame_id, gt_instances['instances_ids']],
+                             dim=1)
+                 for frame_id, gt_instances in enumerate(gt_vid_instances)]
+                for gt_vid_instances in batch_gt_instances
+            ]
+            gt_instance_ids_list = [torch.cat(gt_instance_ids, dim=0) for gt_instance_ids in gt_instance_ids_list]
+            targets = multi_apply(preprocess_video_panoptic_gt, gt_labels_list,
+                                  gt_masks_list, gt_semantic_segs, gt_instance_ids_list,
+                                  num_things_list, num_stuff_list)
+        else:
+            gt_labels_list = [
+                gt_instances['labels'] for gt_instances in batch_gt_instances
+            ]
+            gt_masks_list = [
+                gt_instances['masks'] for gt_instances in batch_gt_instances
+            ]
+            gt_semantic_segs = [
+                None if gt_semantic_seg is None else gt_semantic_seg.sem_seg
+                for gt_semantic_seg in batch_gt_semantic_segs
+            ]
+            targets = multi_apply(preprocess_panoptic_gt, gt_labels_list,
+                                  gt_masks_list, gt_semantic_segs, num_things_list,
+                                  num_stuff_list)
+        labels, masks = targets
+        batch_gt_instances = [
+            InstanceData(labels=label, masks=mask)
+            for label, mask in zip(labels, masks)
+        ]
+        return batch_gt_instances
+
+    def get_targets(
+            self,
+            cls_scores_list: List[Tensor],
+            mask_preds_list: List[Tensor],
+            batch_gt_instances: InstanceList,
+            batch_img_metas: List[dict],
+            return_sampling_results: bool = False
+    ) -> Tuple[List[Union[Tensor, int]]]:
+        """Compute classification and mask targets for all images for a decoder
+        layer.
+
+        Args:
+            cls_scores_list (list[Tensor]): Mask score logits from a single
+                decoder layer for all images. Each with shape (num_queries,
+                cls_out_channels).
+            mask_preds_list (list[Tensor]): Mask logits from a single decoder
+                layer for all images. Each with shape (num_queries, h, w).
+            batch_gt_instances (list[obj:`InstanceData`]): each contains
+                ``labels`` and ``masks``.
+            batch_img_metas (list[dict]): List of image meta information.
+            return_sampling_results (bool): Whether to return the sampling
+                results. Defaults to False.
+
+        Returns:
+            tuple: a tuple containing the following targets.
+
+                - labels_list (list[Tensor]): Labels of all images.\
+                    Each with shape (num_queries, ).
+                - label_weights_list (list[Tensor]): Label weights\
+                    of all images. Each with shape (num_queries, ).
+                - mask_targets_list (list[Tensor]): Mask targets of\
+                    all images. Each with shape (num_queries, h, w).
+                - mask_weights_list (list[Tensor]): Mask weights of\
+                    all images. Each with shape (num_queries, ).
+                - avg_factor (int): Average factor that is used to average\
+                    the loss. When using sampling method, avg_factor is
+                    usually the sum of positive and negative priors. When
+                    using `MaskPseudoSampler`, `avg_factor` is usually equal
+                    to the number of positive priors.
+
+            additional_returns: This function enables user-defined returns from
+                `self._get_targets_single`. These returns are currently refined
+                to properties at each feature map (i.e. having HxW dimension).
+                The results will be concatenated after the end.
+        """
+        results = multi_apply(
+            self._get_targets_single, cls_scores_list, mask_preds_list, batch_gt_instances, batch_img_metas
+        )
+        labels_list, label_weights_list, mask_targets_list, mask_weights_list, \
+            pos_inds_list, neg_inds_list, sampling_results_list = results[:7]
+        rest_results = list(results[7:])
+
+        avg_factor = sum([results.avg_factor for results in sampling_results_list])
+        res = (labels_list, label_weights_list, mask_targets_list, mask_weights_list, avg_factor)
+
+        if return_sampling_results:
+            res = res + sampling_results_list
+
+        return res + tuple(rest_results)
+
+    def _get_targets_single(self, cls_score: Tensor, mask_pred: Tensor,
+                            gt_instances: InstanceData,
+                            img_meta: dict) -> Tuple[Tensor]:
+        """Compute classification and mask targets for one image.
+
+        Args:
+            cls_score (Tensor): Mask score logits from a single decoder layer
+                for one image. Shape (num_queries, cls_out_channels).
+            mask_pred (Tensor): Mask logits for a single decoder layer for one
+                image. Shape (num_queries, h, w).
+            gt_instances (:obj:`InstanceData`): It contains ``labels`` and
+                ``masks``.
+            img_meta (dict): Image informtation.
+
+        Returns:
+            tuple[Tensor]: A tuple containing the following for one image.
+
+                - labels (Tensor): Labels of each image. \
+                    shape (num_queries, ).
+                - label_weights (Tensor): Label weights of each image. \
+                    shape (num_queries, ).
+                - mask_targets (Tensor): Mask targets of each image. \
+                    shape (num_queries, h, w).
+                - mask_weights (Tensor): Mask weights of each image. \
+                    shape (num_queries, ).
+                - pos_inds (Tensor): Sampled positive indices for each \
+                    image.
+                - neg_inds (Tensor): Sampled negative indices for each \
+                    image.
+                - sampling_result (:obj:`SamplingResult`): Sampling results.
+        """
+        gt_labels = gt_instances.labels
+        gt_masks = gt_instances.masks
+
+        # sample points
+        num_queries = cls_score.shape[0]
+        num_gts = gt_labels.shape[0]
+
+        point_coords = torch.rand((1, self.num_points, 2), device=cls_score.device)
+        # shape (num_queries, num_points)
+        mask_points_pred = point_sample(mask_pred.unsqueeze(1),
+                                        point_coords.repeat(num_queries, 1, 1)).squeeze(1)
+        # shape (num_gts, num_points)
+        gt_points_masks = point_sample(gt_masks.unsqueeze(1).float(),
+                                        point_coords.repeat(num_gts, 1, 1)).squeeze(1)
+
+        sampled_gt_instances = InstanceData(
+            labels=gt_labels, masks=gt_points_masks)
+        sampled_pred_instances = InstanceData(
+            scores=cls_score, masks=mask_points_pred)
+        # assign and sample
+        assign_result = self.assigner.assign(
+            pred_instances=sampled_pred_instances,
+            gt_instances=sampled_gt_instances,
+            img_meta=img_meta
+        )
+        pred_instances = InstanceData(scores=cls_score, masks=mask_pred)
+        sampling_result = self.sampler.sample(
+            assign_result=assign_result,
+            pred_instances=pred_instances,
+            gt_instances=gt_instances)
+        pos_inds = sampling_result.pos_inds
+        neg_inds = sampling_result.neg_inds
+
+        # label target
+        labels = gt_labels.new_full((num_queries,), self.num_classes, dtype=torch.long)
+        labels[pos_inds] = gt_labels[sampling_result.pos_assigned_gt_inds]
+        label_weights = gt_labels.new_ones((num_queries,))
+
+        # mask target
+        mask_targets = gt_masks[sampling_result.pos_assigned_gt_inds]
+        mask_weights = mask_pred.new_zeros((num_queries,))
+        mask_weights[pos_inds] = 1.0
+
+        return labels, label_weights, mask_targets, mask_weights, pos_inds, neg_inds, sampling_result
+
+    def loss_by_feat(self, all_cls_scores: Tensor, all_mask_preds: Tensor, all_iou_preds,
+                     batch_gt_instances: List[InstanceData],
+                     batch_img_metas: List[dict]) -> Dict[str, Tensor]:
+        """Loss function.
+
+        Args:
+            all_cls_scores (Tensor): Classification scores for all decoder
+                layers with shape (num_decoder, batch_size, num_queries,
+                cls_out_channels). Note `cls_out_channels` should includes
+                background.
+            all_mask_preds (Tensor): Mask scores for all decoder layers with
+                shape (num_decoder, batch_size, num_queries, h, w).
+            batch_gt_instances (list[obj:`InstanceData`]): each contains
+                ``labels`` and ``masks``.
+            batch_img_metas (list[dict]): List of image meta information.
+
+        Returns:
+            dict[str, Tensor]: A dictionary of loss components.
+        """
+        num_dec_layers = len(all_cls_scores)
+        batch_gt_instances_list = [
+            batch_gt_instances for _ in range(num_dec_layers)
+        ]
+        img_metas_list = [batch_img_metas for _ in range(num_dec_layers)]
+        losses_cls, losses_mask, losses_dice, losses_iou = multi_apply(
+            self._loss_by_feat_single, all_cls_scores, all_mask_preds, all_iou_preds, batch_gt_instances_list, img_metas_list
+        )
+
+        loss_dict = dict()
+        # loss from other decoder layers
+        num_dec_layer = 0
+        for loss_cls_i, loss_mask_i, loss_dice_i, loss_iou_i in zip(losses_cls[:-1], losses_mask[:-1], losses_dice[:-1], losses_iou[:-1]):
+            loss_dict[f'd{num_dec_layer}.loss_cls'] = loss_cls_i
+            loss_dict[f'd{num_dec_layer}.loss_mask'] = loss_mask_i
+            loss_dict[f'd{num_dec_layer}.loss_dice'] = loss_dice_i
+            loss_dict[f'd{num_dec_layer}.loss_iou'] = loss_iou_i
+            num_dec_layer += 1
+        # loss from the last decoder layer
+        loss_dict['loss_cls'] = losses_cls[-1]
+        loss_dict['loss_mask'] = losses_mask[-1]
+        loss_dict['loss_dice'] = losses_dice[-1]
+        loss_dict['loss_iou'] = losses_iou[-1]
+        return loss_dict
+
+    def _loss_by_feat_single(self, cls_scores: Tensor, mask_preds: Tensor, iou_preds,
+                             batch_gt_instances: List[InstanceData],
+                             batch_img_metas: List[dict]) -> Tuple[Tensor]:
+        """Loss function for outputs from a single decoder layer.
+
+        Args:
+            cls_scores (Tensor): Mask score logits from a single decoder layer
+                for all images. Shape (batch_size, num_queries,
+                cls_out_channels). Note `cls_out_channels` should includes
+                background.
+            mask_preds (Tensor): Mask logits for a pixel decoder for all
+                images. Shape (batch_size, num_queries, h, w).
+            batch_gt_instances (list[obj:`InstanceData`]): each contains
+                ``labels`` and ``masks``.
+            batch_img_metas (list[dict]): List of image meta information.
+
+        Returns:
+            tuple[Tensor]: Loss components for outputs from a single \
+                decoder layer.
+        """
+        batch_size, num_ins = cls_scores.size(0), cls_scores.size(1)
+        if self.prompt_training:
+            num_imgs = mask_preds.size(0)
+            cls_scores_list = [cls_scores[i] for i in range(num_imgs)]
+            mask_preds_list = [mask_preds[i] for i in range(num_imgs)]
+            mask_targets = torch.cat([item.masks for item in batch_gt_instances])
+            mask_weights = mask_targets.new_ones((batch_size, num_ins), dtype=torch.float)
+            avg_factor = cls_scores.size(1)
+
+            num_total_masks = reduce_mean(cls_scores.new_tensor([avg_factor]))
+            num_total_masks = max(num_total_masks, 1)
+
+            mask_preds = mask_preds[mask_weights > 0]
+
+            if mask_targets.shape[0] == 0:
+                # zero match
+                loss_dice = mask_preds.sum()
+                loss_mask = mask_preds.sum()
+                loss_iou = iou_preds.sum() * 0.0
+                loss_cls = cls_scores.sum() * 0.0
+                if self.use_adaptor:
+                    for n,p in self.panoptic_attn.named_parameters():
+                        loss_cls += p.sum() * 0.0
+                    for n,p in self.panoptic_norm.named_parameters():
+                        loss_cls += p.sum() * 0.0
+                    for n,p in self.panoptic_cls.named_parameters():
+                        loss_cls += p.sum() * 0.0
+                return loss_cls, loss_mask, loss_dice, loss_iou
+
+            with torch.no_grad():
+                points_coords = get_uncertain_point_coords_with_randomness(
+                    mask_preds.unsqueeze(1), None, self.num_points,
+                    self.oversample_ratio, self.importance_sample_ratio)
+                mask_point_targets = point_sample(
+                    mask_targets.unsqueeze(1).float(), points_coords).squeeze(1)
+
+            mask_point_preds = point_sample(mask_preds.unsqueeze(1),
+                                            points_coords).squeeze(1)
+
+            # dice loss
+            loss_mask = self.loss_mask(mask_point_preds,
+                                    mask_point_targets,
+                                    reduction_override='none').mean(1)
+            loss_dice = self.loss_dice(mask_point_preds,
+                                    mask_point_targets,
+                                    reduction_override='none')
+
+            iou_preds = iou_preds.flatten()  # (bs, 60, 6) --> (bs, 360)
+            iou_target = 1 - (loss_dice / self.loss_dice.loss_weight)
+            loss_iou = F.mse_loss(iou_preds, iou_target, reduction="none")
+            loss_mask = loss_mask.sum() / num_total_masks
+            loss_dice = loss_dice.sum() / num_total_masks
+            loss_iou = loss_iou.sum() / num_total_masks * 10.0
+
+            loss_cls = cls_scores.sum() * 0.0
+            loss_cls += (self.query_embed.weight.sum() + self.query_feat.weight.sum()) * 0.0
+            if self.use_adaptor:
+                for n,p in self.panoptic_attn.named_parameters():
+                    loss_cls += p.sum() * 0.0
+                for n,p in self.panoptic_norm.named_parameters():
+                    loss_cls += p.sum() * 0.0
+                for n,p in self.panoptic_cls.named_parameters():
+                    loss_cls += p.sum() * 0.0
+            return loss_cls, loss_mask, loss_dice, loss_iou
+        else:
+            cls_scores_list = [cls_scores[i] for i in range(batch_size)]
+            mask_preds_list = [mask_preds[i] for i in range(batch_size)]
+            labels_list, label_weights_list, mask_targets_list, mask_weights_list, avg_factor = \
+                self.get_targets(cls_scores_list, mask_preds_list, batch_gt_instances, batch_img_metas)
+            labels = torch.stack(labels_list, dim=0)
+            label_weights = torch.stack(label_weights_list, dim=0)
+            mask_targets = torch.cat(mask_targets_list, dim=0)
+            mask_weights = torch.stack(mask_weights_list, dim=0)
+
+            # classification loss
+            # shape (batch_size * num_queries, )
+            cls_scores = cls_scores.flatten(0, 1)
+            labels = labels.flatten(0, 1)
+            label_weights = label_weights.flatten(0, 1)
+            class_weight = cls_scores.new_tensor(self.class_weight)
+            ignore_inds = labels.eq(-1.)
+            # zero will not be involved in the loss cal
+            labels[ignore_inds] = 0
+            label_weights[ignore_inds] = 0.
+            obj_inds = labels.eq(self.num_classes)
+        
+            loss_cls = self.loss_cls(
+                cls_scores,
+                labels,
+                label_weights,
+                avg_factor=class_weight[labels].sum()
+            )
+        
+            # loss_mask
+            num_total_masks = reduce_mean(cls_scores.new_tensor([avg_factor]))
+            num_total_masks = max(num_total_masks, 1)
+            # extract positive ones
+            # shape (batch_size, num_queries, h, w) -> (num_total_gts, h, w)
+            mask_preds = mask_preds[mask_weights > 0]
+
+            if mask_targets.shape[0] == 0:
+                # zero match
+                loss_dice = mask_preds.sum()
+                loss_mask = mask_preds.sum()
+                loss_iou = iou_preds.sum() * 0.0
+                loss_iou += (self.mask_tokens.weight.sum() + self.pb_embedding.weight.sum()) * 0.0
+                loss_iou += (self.pos_linear.weight.sum() + self.pos_linear.bias.sum()) * 0.0
+                if self.use_adaptor:
+                    for n,p in self.prompt_attn.named_parameters():
+                        loss_iou += p.sum() * 0.0
+                    for n,p in self.prompt_norm.named_parameters():
+                        loss_iou += p.sum() * 0.0
+                    for n,p in self.prompt_iou.named_parameters():
+                        loss_iou += p.sum() * 0.0
+                return loss_cls, loss_mask, loss_dice, loss_iou
+
+            with torch.no_grad():
+                points_coords = get_uncertain_point_coords_with_randomness(
+                    mask_preds.unsqueeze(1), None, self.num_points,
+                    self.oversample_ratio, self.importance_sample_ratio)
+                # shape (num_total_gts, h, w) -> (num_total_gts, num_points)
+                mask_point_targets = point_sample(
+                    mask_targets.unsqueeze(1).float(), points_coords).squeeze(1)
+            # shape (num_queries, h, w) -> (num_queries, num_points)
+            mask_point_preds = point_sample(
+                mask_preds.unsqueeze(1), points_coords).squeeze(1)
+
+            # dice loss
+            loss_dice = self.loss_dice(
+                mask_point_preds, mask_point_targets, avg_factor=num_total_masks)
+
+            # mask loss
+            # shape (num_queries, num_points) -> (num_queries * num_points, )
+            mask_point_preds = mask_point_preds.reshape(-1)
+            # shape (num_total_gts, num_points) -> (num_total_gts * num_points, )
+            mask_point_targets = mask_point_targets.reshape(-1)
+            loss_mask = self.loss_mask(
+                mask_point_preds,
+                mask_point_targets,
+                avg_factor=num_total_masks * self.num_points
+            )
+            loss_iou = iou_preds.sum() * 0.0
+            loss_iou += (self.mask_tokens.weight.sum() + self.pb_embedding.weight.sum()) * 0.0
+            loss_iou += (self.pos_linear.weight.sum() + self.pos_linear.bias.sum()) * 0.0
+            if self.use_adaptor:
+                for n,p in self.prompt_attn.named_parameters():
+                    loss_iou += p.sum() * 0.0
+                for n,p in self.prompt_norm.named_parameters():
+                    loss_iou += p.sum() * 0.0
+                for n,p in self.prompt_iou.named_parameters():
+                    loss_iou += p.sum() * 0.0
+            return loss_cls, loss_mask, loss_dice, loss_iou
 
     def forward_logit(self, cls_embd):
         cls_pred = torch.einsum('bnc,ckp->bnkp', F.normalize(cls_embd, dim=-1), self.cls_embed)
@@ -479,6 +910,87 @@ class Mask2FormerVideoHead(AnchorFreeHead):
                 iou_pred_list.append(iou_preds)
 
         return cls_pred_list, mask_pred_list, iou_pred_list, query_feat
+
+    def loss(
+            self,
+            x: Tuple[Tensor],
+            batch_data_samples: SampleList,
+    ) -> Dict[str, Tensor]:
+        """Perform forward propagation and loss calculation of the panoptic
+        head on the features of the upstream network.
+
+        Args:
+            x (tuple[Tensor]): Multi-level features from the upstream
+                network, each is a 4D-tensor.
+            batch_data_samples (List[:obj:`DetDataSample`]): The Data
+                Samples. It usually includes information such as
+                `gt_instance`, `gt_panoptic_seg` and `gt_sem_seg`.
+
+        Returns:
+            dict[str, Tensor]: a dictionary of loss components
+        """
+        batch_img_metas = []
+        batch_gt_instances = []
+        batch_gt_semantic_segs = []
+
+        if batch_data_samples[0].get('data_tag', 'coco') == 'sam':
+            self.prompt_training = True
+        else:
+            self.prompt_training = False
+
+        if self.prompt_training:
+            for data_sample in batch_data_samples:
+                device = data_sample.gt_instances.labels.device
+                ori_masks = data_sample.gt_instances.masks.to_tensor(torch.bool, device)
+                indices = data_sample.gt_instances_collected.idx
+                gt_masks = ori_masks[indices]
+                gt_instances = InstanceData(masks=gt_masks)
+                batch_img_metas.append(data_sample.metainfo)
+                batch_gt_instances.append(gt_instances)
+        else:
+            for data_sample in batch_data_samples:
+                if isinstance(data_sample, TrackDataSample):
+                    clip_meta = []
+                    clip_instances = []
+                    clip_sem_seg = []
+                    for det_sample in data_sample:
+                        clip_meta.append(det_sample.metainfo)
+                        clip_instances.append(det_sample.gt_instances)
+                        if 'gt_sem_seg' in det_sample:
+                            clip_sem_seg.append(det_sample.gt_sem_seg)
+                        else:
+                            clip_sem_seg.append(None)
+                    batch_img_metas.append(clip_meta)
+                    batch_gt_instances.append(clip_instances)
+                    batch_gt_semantic_segs.append(clip_sem_seg)
+                else:
+                    batch_img_metas.append(data_sample.metainfo)
+                    batch_gt_instances.append(data_sample.gt_instances)
+                    if 'gt_sem_seg' in data_sample:
+                        batch_gt_semantic_segs.append(data_sample.gt_sem_seg)
+                    else:
+                        batch_gt_semantic_segs.append(None)
+            batch_gt_instances = self.preprocess_gt(batch_gt_instances, batch_gt_semantic_segs)
+        # forward
+        all_cls_scores, all_mask_preds, all_iou_preds, _ = self(x, batch_data_samples)
+
+        # loss
+        if isinstance(batch_data_samples[0], TrackDataSample):
+            num_frames = len(batch_img_metas[0])
+            all_mask_preds = [mask.flatten(2, 3) for mask in all_mask_preds]
+            for instance in batch_gt_instances:
+                instance['masks'] = instance['masks'].flatten(1, 2)
+            film_metas = [
+                {
+                    'img_shape': (meta[0]['img_shape'][0] * num_frames,
+                                  meta[0]['img_shape'][1])
+                } for meta in batch_img_metas
+            ]
+            batch_img_metas = film_metas
+
+        losses = self.loss_by_feat(all_cls_scores, all_mask_preds, all_iou_preds, batch_gt_instances, batch_img_metas)
+
+        return losses
 
     def predict(self, x: Tuple[Tensor],
                 batch_data_samples: SampleList,

@@ -59,6 +59,30 @@ class Mask2formerVideo(SingleStageDetector):
 
         self.inference_sam = inference_sam
 
+    def loss(self, batch_inputs: Tensor,
+             batch_data_samples: SampleList) -> Dict[str, Tensor]:
+        """
+        Args:
+            batch_inputs (Tensor): Input images of shape (N, C, H, W).
+                These should usually be mean centered and std scaled.
+            batch_data_samples (list[:obj:`DetDataSample`]): The batch
+                data samples. It usually includes information such
+                as `gt_instance` or `gt_panoptic_seg` or `gt_sem_seg`.
+
+        Returns:
+            dict[str, Tensor]: a dictionary of loss components
+        """
+        if isinstance(batch_data_samples[0], TrackDataSample):
+            bs, num_frames, three, h, w = batch_inputs.shape
+            assert three == 3, "Only supporting images with 3 channels."
+
+            x = batch_inputs.reshape((bs * num_frames, three, h, w))
+            x = self.extract_feat(x)
+        else:
+            x = self.extract_feat(batch_inputs)
+        losses = self.panoptic_head.loss(x, batch_data_samples)
+        return losses
+
     def predict(self,
                 batch_inputs: Tensor,
                 batch_data_samples: SampleList,
@@ -103,6 +127,9 @@ class Mask2formerVideo(SingleStageDetector):
             bs = batch_inputs.shape[0]
             feats = self.extract_feat(batch_inputs)
 
+        if self.inference_sam and len(batch_data_samples[0].gt_instances_collected)==0:
+            return batch_data_samples
+
         mask_cls_results, mask_pred_results, iou_results = self.panoptic_head.predict(feats, batch_data_samples)
 
         if self.inference_sam:
@@ -110,10 +137,18 @@ class Mask2formerVideo(SingleStageDetector):
                 meta = data_sample.metainfo
                 img_height, img_width = meta['img_shape'][:2]
                 mask_pred_result = mask_pred_results[i][:, :img_height, :img_width]
-                mask_pred_result = mask_pred_result.view(-1, img_height, img_width) > 0
-                all_pred_instances = InstanceData(masks=mask_pred_result)
-                batch_data_samples[i].pred_instances = all_pred_instances
 
+                mask_pred_result = F.interpolate(mask_pred_result[None], meta['ori_shape'], mode="bilinear", align_corners=False)[0]
+                mask_pred_result = mask_pred_result.view(-1, meta['ori_shape'][0], meta['ori_shape'][1]) > 0
+                # mask_pred_result = mask_pred_result.view(-1, img_height, img_width) > 0
+                results = InstanceData()
+                if 'pred_instances' in data_sample:
+                    results.labels = data_sample.pred_instances.labels
+                    results.scores = data_sample.pred_instances.scores
+                    scale_factor = data_sample.pred_instances.bboxes.new_tensor(data_sample.scale_factor).repeat(2)
+                    results.bboxes = data_sample.pred_instances.bboxes / scale_factor
+                results.masks = mask_pred_result
+                data_sample.pred_instances = results
             return batch_data_samples
 
         if self.OVERLAPPING is not None:

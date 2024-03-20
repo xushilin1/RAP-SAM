@@ -237,8 +237,148 @@ class RapSAMVideoHead(Mask2FormerVideoHead):
                 all_iou_preds.append(iou_preds)
         return all_cls_scores, all_masks_preds, all_iou_preds, object_kernels
 
-    def get_targets(self, *args, **kwargs):
-        raise NotImplementedError
+    def _loss_by_feat_single(self, cls_scores, mask_preds, iou_preds, batch_gt_instances, batch_img_metas):
+        batch_size, num_ins = cls_scores.size(0), cls_scores.size(1)
+        if self.prompt_training:
+            num_imgs = mask_preds.size(0)
+            cls_scores_list = [cls_scores[i] for i in range(num_imgs)]
+            mask_preds_list = [mask_preds[i] for i in range(num_imgs)]
+            mask_targets = torch.cat([item.masks for item in batch_gt_instances])
+            mask_weights = mask_targets.new_ones((batch_size, num_ins), dtype=torch.float)
+            avg_factor = cls_scores.size(1)
 
-    def loss_by_feat(self, *args, **kwargs):
-        raise NotImplementedError
+            num_total_masks = reduce_mean(cls_scores.new_tensor([avg_factor]))
+            num_total_masks = max(num_total_masks, 1)
+
+            mask_preds = mask_preds[mask_weights > 0]
+
+            if mask_targets.shape[0] == 0:
+                # zero match
+                loss_dice = mask_preds.sum()
+                loss_mask = mask_preds.sum()
+                loss_iou = loss_dice.sum() * 0.0
+                loss_cls = cls_scores.sum() * 0.0
+                return loss_cls, loss_mask, loss_dice, loss_iou
+
+            with torch.no_grad():
+                points_coords = get_uncertain_point_coords_with_randomness(
+                    mask_preds.unsqueeze(1), None, self.num_points,
+                    self.oversample_ratio, self.importance_sample_ratio)
+                mask_point_targets = point_sample(
+                    mask_targets.unsqueeze(1).float(), points_coords).squeeze(1)
+
+            mask_point_preds = point_sample(mask_preds.unsqueeze(1),
+                                            points_coords).squeeze(1)
+
+            # dice loss
+            loss_mask = self.loss_mask(mask_point_preds,
+                                    mask_point_targets,
+                                    reduction_override='none').mean(1)
+            loss_dice = self.loss_dice(mask_point_preds,
+                                    mask_point_targets,
+                                    reduction_override='none')
+
+            iou_preds = iou_preds.flatten()  # (bs, 60, 6) --> (bs, 360)
+            iou_target = 1 - (loss_dice / self.loss_dice.loss_weight)
+            loss_iou = F.mse_loss(iou_preds, iou_target, reduction="none")
+            loss_mask = loss_mask.sum() / num_total_masks
+            loss_dice = loss_dice.sum() / num_total_masks
+            loss_iou = loss_iou.sum() / num_total_masks * 10.0
+
+            loss_cls = cls_scores.sum() * 0.0 + self.kernels.weight.sum() * 0.0
+            if self.use_adaptor:
+                for n, p in self.panoptic_attn.named_parameters():
+                    loss_cls += p.sum() * 0.0
+                for n, p in self.panoptic_norm.named_parameters():
+                    loss_cls += p.sum() * 0.0
+                for n, p in self.panoptic_cls.named_parameters():
+                    loss_cls += p.sum() * 0.0
+            return loss_cls, loss_mask, loss_dice, loss_iou
+        else:
+            cls_scores_list = [cls_scores[i] for i in range(batch_size)]
+            mask_preds_list = [mask_preds[i] for i in range(batch_size)]
+            labels_list, label_weights_list, mask_targets_list, mask_weights_list, avg_factor = \
+                self.get_targets(cls_scores_list, mask_preds_list, batch_gt_instances, batch_img_metas)
+            labels = torch.stack(labels_list, dim=0)
+            label_weights = torch.stack(label_weights_list, dim=0)
+            mask_targets = torch.cat(mask_targets_list, dim=0)
+            mask_weights = torch.stack(mask_weights_list, dim=0)
+
+        
+            # classification loss
+            # shape (batch_size * num_queries, )
+            cls_scores = cls_scores.flatten(0, 1)
+            labels = labels.flatten(0, 1)
+            label_weights = label_weights.flatten(0, 1)
+            class_weight = cls_scores.new_tensor(self.class_weight)
+            ignore_inds = labels.eq(-1.)
+            # zero will not be involved in the loss cal
+            labels[ignore_inds] = 0
+            label_weights[ignore_inds] = 0.
+        
+            loss_cls = self.loss_cls(
+                cls_scores,
+                labels,
+                label_weights,
+                # avg_factor=cls_avg_factor
+                avg_factor=class_weight[labels].sum()
+            )
+        
+            # loss_mask
+            num_total_masks = reduce_mean(cls_scores.new_tensor([avg_factor]))
+            num_total_masks = max(num_total_masks, 1)
+            # extract positive ones
+            # shape (batch_size, num_queries, h, w) -> (num_total_gts, h, w)
+            mask_preds = mask_preds[mask_weights > 0]
+
+            if mask_targets.shape[0] == 0:
+                # zero match
+                loss_dice = mask_preds.sum()
+                loss_mask = mask_preds.sum()
+                loss_iou = iou_preds.sum() * 0.0
+                loss_iou += (self.mask_tokens.weight.sum() + self.pb_embedding.weight.sum()) * 0.0
+                loss_iou += (self.pos_linear.weight.sum() + self.pos_linear.bias.sum()) * 0.0
+                if self.use_adaptor:
+                    for n, p in self.prompt_attn.named_parameters():
+                        loss_iou += p.sum() * 0.0
+                    for n, p in self.prompt_norm.named_parameters():
+                        loss_iou += p.sum() * 0.0
+                    for n, p in self.prompt_iou.named_parameters():
+                        loss_iou += p.sum() * 0.0
+                return loss_cls, loss_mask, loss_dice, loss_iou
+
+            with torch.no_grad():
+                points_coords = get_uncertain_point_coords_with_randomness(
+                    mask_preds.unsqueeze(1), None, self.num_points,
+                    self.oversample_ratio, self.importance_sample_ratio)
+                # shape (num_total_gts, h, w) -> (num_total_gts, num_points)
+                mask_point_targets = point_sample(
+                    mask_targets.unsqueeze(1).float(), points_coords).squeeze(1)
+            # shape (num_queries, h, w) -> (num_queries, num_points)
+            mask_point_preds = point_sample(
+                mask_preds.unsqueeze(1), points_coords).squeeze(1)
+            # dice loss
+            loss_dice = self.loss_dice(
+                mask_point_preds, mask_point_targets, avg_factor=num_total_masks)
+
+            # mask loss
+            # shape (num_queries, num_points) -> (num_queries * num_points, )
+            mask_point_preds = mask_point_preds.reshape(-1)
+            # shape (num_total_gts, num_points) -> (num_total_gts * num_points, )
+            mask_point_targets = mask_point_targets.reshape(-1)
+            loss_mask = self.loss_mask(
+                mask_point_preds,
+                mask_point_targets,
+                avg_factor=num_total_masks * self.num_points
+            )
+            loss_iou = iou_preds.sum() * 0.0
+            loss_iou += (self.mask_tokens.weight.sum() + self.pb_embedding.weight.sum()) * 0.0
+            loss_iou += (self.pos_linear.weight.sum() + self.pos_linear.bias.sum()) * 0.0
+            if self.use_adaptor:
+                for n, p in self.prompt_attn.named_parameters():
+                    loss_iou += p.sum() * 0.0
+                for n, p in self.prompt_norm.named_parameters():
+                    loss_iou += p.sum() * 0.0
+                for n, p in self.prompt_iou.named_parameters():
+                    loss_iou += p.sum() * 0.0
+            return loss_cls, loss_mask, loss_dice, loss_iou

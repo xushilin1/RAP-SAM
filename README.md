@@ -53,9 +53,9 @@ Install the packages:
 pip install mmengine==0.8.4
 pip install mmdet=3.0.0
 ```
-Generate classifier using the following command.
+Generate classifier using the following command or download from [CocoPanopticOVDataset_YouTubeVISDataset_2019.pth](https://1drv.ms/u/c/12a1b84edebf20f7/EXxePOUe_jpJsAC2FqVaPzkBv0X1y0cIkmwlp4wE7bkW5A?e=a3GMnj) and [CocoPanopticOVDataset.pth](https://1drv.ms/u/c/12a1b84edebf20f7/EVjJu546FCtAko-aqlsb11IB2vYAMyXHd3cTe5OdsLllRA?e=gV6qat) .
 ```
-PYTHONPATH='.' python tools/gen_cls.py $CONFIG
+PYTHONPATH='.' python tools/gen_cls.py configs/rap_sam/rap_sam_convl_12e_adaptor.py
 ```
 ## Data Preparation
 The main experiments are conducted on [COCO](https://cocodataset.org/#home) 

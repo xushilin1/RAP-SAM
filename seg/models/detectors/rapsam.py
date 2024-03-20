@@ -7,7 +7,7 @@ from mmdet.models.detectors import SingleStageDetector
 from .mask2former_vid import Mask2formerVideo
 
 @MODELS.register_module()
-class YOSOVideoSam(Mask2formerVideo):
+class RapSAM(Mask2formerVideo):
     OVERLAPPING = None
 
     def __init__(self,

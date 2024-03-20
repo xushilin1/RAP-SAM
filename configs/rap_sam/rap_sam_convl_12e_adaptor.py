@@ -7,7 +7,7 @@ from mmdet.models.backbones import ResNet
 
 from seg.models.necks.ramsam_neck import YOSONeck
 from seg.models.heads.rapsam_head import RapSAMVideoHead
-from seg.models.detectors.rapsam import YOSOVideoSam
+from seg.models.detectors.rapsam import RapSAM
 from seg.models.backbones import OpenCLIPBackbone
 from seg.models.data_preprocessor.vid_sam_preprocessor import VideoPromptDataPreprocessor
 with read_base():
@@ -44,7 +44,7 @@ num_things_classes = 102
 num_stuff_classes = 53
 num_classes = num_things_classes + num_stuff_classes
 model = dict(
-    type=YOSOVideoSam,
+    type=RapSAM,
     data_preprocessor=data_preprocessor,
     backbone=dict(
         type=OpenCLIPBackbone,
