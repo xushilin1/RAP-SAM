@@ -29,6 +29,15 @@
      PKU, NTU, UC-Merced, Shanghai AI, KAUST, Google Research
   </p>
 
+  <p align="center">
+    <a href='https://arxiv.org/abs/2401.10228'>
+      <img src='https://img.shields.io/badge/Paper-PDF-green?style=flat&logo=arXiv&logoColor=green' alt='arXiv PDF'> </a>
+    <a href='https://xushilin1.github.io/rap_sam/' style='padding-left: 0.5rem;'>
+      <img src='https://img.shields.io/badge/Project-Page-blue?style=flat&logo=Google%20chrome&logoColor=blue' alt='Project Page'> </a>
+    <a href='https://huggingface.co/spaces/shilinxu/rap-sam' style='padding-left: 0.5rem;'>
+      <img src='https://img.shields.io/badge/Huggingface%20Model-8A2BE2' alt='Project Page'> </a>
+  </p>
+
 <br/>
 
 ## Introduction
