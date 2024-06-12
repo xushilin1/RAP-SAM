@@ -1,0 +1,6 @@
+mmengine==0.8.4
+mmdet==3.3.0
+mmcv==2.0.1 -f https://download.openmmlab.com/mmcv/dist/cu117/torch1.13/index.html
+kornia
+scikit-image
+git+https://github.com/cocodataset/panopticapi.git

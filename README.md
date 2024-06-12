@@ -60,7 +60,7 @@ The detection framework is built upon [MMDet3.0](https://github.com/open-mmlab/m
 Install the packages:
 ```bash
 pip install mmengine==0.8.4
-pip install mmdet=3.0.0
+pip install mmdet==3.3.0
 ```
 Generate classifier using the following command or download from [CocoPanopticOVDataset_YouTubeVISDataset_2019.pth](https://1drv.ms/u/c/12a1b84edebf20f7/EXxePOUe_jpJsAC2FqVaPzkBv0X1y0cIkmwlp4wE7bkW5A?e=a3GMnj) and [CocoPanopticOVDataset.pth](https://1drv.ms/u/c/12a1b84edebf20f7/EVjJu546FCtAko-aqlsb11IB2vYAMyXHd3cTe5OdsLllRA?e=gV6qat) .
 ```
@@ -86,11 +86,14 @@ following:
         ├── train    
         ├── valid      
 ```
-
+## Run Demo
+```
+python demo/demo.py demo/demo.jpg configs/rap_sam/eval_rap_sam_coco.py --weights rapsam_r50_12e.pth
+```
 ## Inference
 We provide the checkpoint here. You can download them and then run the command below for inference.
 
-[rapsam_r50_12e.pth](https://1drv.ms/u/c/12a1b84edebf20f7/EZH7IDUQTzlGlelI9whr39EB3Oet_Lux1tpowOYh68dWUg?e=GDF8Xg)
+[rapsam_r50_12e.pth](https://1drv.ms/u/c/12a1b84edebf20f7/EZn9BJ9lv6FKieTMXTqLh28BjWgTVbG3sJOltfH7rEF2xg?e=g3dqiu)
 
 #### Test on COCO Panoptic 
 
