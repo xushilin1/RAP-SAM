@@ -101,11 +101,15 @@ We provide the checkpoint here. You can download them and then run the command b
 ./tools/dist_test.sh configs/rap_sam/eval_rap_sam_coco.py $CKPT $NUM_GPUS
 ```
 #### Test on Video Instance Segmentation
-
+```base 
+./tools/dist_test.sh configs/rap_sam/eval_rap_sam_yt19.py $CKPT $NUM_GPUS
+```
 
 
 #### Test on Interactive Segmentation (COCO-SAM)
-
+```base 
+./tools/dist_test.sh configs/rap_sam/eval_rap_sam_prompt.py $CKPT $NUM_GPUS
+```
 
 
 ## Training 
