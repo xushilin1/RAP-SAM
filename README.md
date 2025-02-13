@@ -1,6 +1,6 @@
 <br />
 <p align="center">
-  <h1 align="center">RAP-SAM: Towards Real-Time All-Purpose Segment Anything</h1>
+  <h1 align="center">RMP-SAM: Towards Real-Time Multi-Purpose Segment Anything</h1>
   <p align="center">
     <a href="https://scholar.google.com/citations?user=8bBcL9sAAAAJ&hl=en"><strong>Shilin Xu</strong></a>
     ·
@@ -134,8 +134,8 @@ The code will be release soon!!! Please stay tuned.
 @article{xu2024rapsam,
     title={RAP-SAM: Towards Real-Time All-Purpose Segment Anything},
     author={Shilin Xu and Haobo Yuan and Qingyu Shi and Lu Qi and Jingbo Wang and Yibo Yang and Yining Li and Kai Chen and Yunhai Tong and Bernard Ghanem and Xiangtai Li and Ming-Hsuan Yang},
-    journal={arXiv preprint},
-    year={2024}
+    journal={ICLR},
+    year={2025}
 }
 ```
 ## License
