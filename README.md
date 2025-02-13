@@ -1,6 +1,6 @@
 <br />
 <p align="center">
-  <h1 align="center">RMP-SAM: Towards Real-Time Multi-Purpose Segment Anything</h1>
+  <h1 align="center">RMP-SAM: Towards Real-Time Multi-Purpose Segment Anything [ICLR-2025-oral]</h1>
   <p align="center">
     <a href="https://scholar.google.com/citations?user=8bBcL9sAAAAJ&hl=en"><strong>Shilin Xu</strong></a>
     ·
